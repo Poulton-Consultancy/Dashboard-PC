@@ -221,7 +221,6 @@
         <button class="btn btn-primary" onclick="testWixConnection()">Test Connection</button>
         <button class="btn btn-success" onclick="syncWithWix()">Sync Now</button>
         <button class="btn btn-warning" onclick="setupWixWebhook()">Setup Auto-Sync</button>
-        <!-- NEW: quick utilities -->
         <button class="btn btn-outline" onclick="seedDemo()">Load Demo Data</button>
         <button class="btn btn-danger" onclick="clearAll()">Clear All</button>
       </div>
@@ -586,45 +585,8 @@
       saveData(); updateDashboard();
       alert(`✅ Recurring ${selectedFreq} cost added successfully!`);
     }
-    function removeInvoice(num){
-      if(confirm(`Remove Invoice #${num}?`)){
-        financialData.invoices = financialData.invoices.filter(inv=>inv.num!==num);
-        saveData(); updateDashboard();
-      }
-    }
-    function removeCost(id){
-      const cost = (financialData.expenses||[]).find(exp=>exp.id===id);
-      if(confirm(`Remove "${cost?.description||'this cost'}"?`)){
-        financialData.expenses = (financialData.expenses||[]).filter(exp=>exp.id!==id);
-        saveData(); updateDashboard();
-      }
-    }
 
-    // ===== Import/Export (robust)
-    function normalizeCostRecord(v){
-      const num = s => Number(String(s||'0').replace(/[^\d.-]/g,''))||0;
-      return {
-        id:'imported_'+Date.now()+'_'+Math.random().toString(36).slice(2),
-        description: v.description || v.Description || v[0] || 'Imported expense',
-        date: toISODateFlexible(v.date || v.Date || v[1]),
-        amount: num(v.amount||v.Amount||v[2]),
-        currency: String(v.currency||v.Currency||v[3]||'AED').toUpperCase(),
-        category: v.category || v.Category || v[4] || 'Other',
-        deductible: /^(y|yes|true|1)$/i.test(String(v['Tax Deductible']||v.taxDeductible||v.deductible||v[5]||'')),
-        notes: v.notes || v.Notes || v[6] || 'Imported from file'
-      };
-    }
-    function normalizeInvoice(o){
-      const num = s => Number(String(s||'0').replace(/[^\d.-]/g,''))||0;
-      const invoiceNo = o.num || o['Invoice #'] || o.invoice || o.Invoice || o[0] || '';
-      const date = toISODateFlexible(o.date || o.Date || o[1]);
-      const client = o.client || o.Client || o[2] || '';
-      const amount = num(o.amount||o.Amount||o[3]);
-      const currency = String(o.currency||o.Currency||o[4]||'AED').toUpperCase();
-      const status = o.status || o.Status || o[5] || 'Unpaid';
-      const paidAmount = num(o.paidAmount||o['Paid Amount']||o[6]|| (String(status).toLowerCase().includes('paid')? amount:0));
-      return { num:invoiceNo, date, client, amount, currency, status, paidAmount };
-    }
+    // ===== IMPORT / EXPORT
     function downloadCSV(filename, rows){
       const csv = rows.map(r => r.map(cell=>{
         const s = (cell??'').toString();
@@ -649,34 +611,33 @@
       ]);
       downloadCSV('invoices.csv', [header, ...rows]);
     }
-    function importCostsFromFile(){
-      const input = document.createElement('input'); input.type='file'; input.accept='.csv,.json';
-      input.onchange = (ev)=>{
-        const file = ev.target.files[0]; if(!file) return;
-        const reader = new FileReader();
-        reader.onload = (e)=>{
-          try{
-            const raw = stripBOM(e.target.result);
-            let imported = [];
-            if(file.name.toLowerCase().endsWith('.json')){
-              const json = JSON.parse(raw);
-              if(!Array.isArray(json)) throw new Error('JSON must be an array of objects');
-              imported = json.map(normalizeCostRecord);
-            } else {
-              const rows = parseCSV(raw); const objs = normalizeObjects(rows);
-              imported = objs.map(normalizeCostRecord);
-            }
-            if(imported.length){
-              if(!financialData.expenses) financialData.expenses = [];
-              financialData.expenses.push(...imported);
-              saveData(); updateDashboard(); alert(`✅ Imported ${imported.length} costs`);
-            } else alert('❌ No valid costs found');
-          }catch(err){ alert('❌ Error importing costs: '+err.message); }
-        };
-        reader.readAsText(file);
+
+    function normalizeInvoice(o){
+      const num = s => Number(String(s||'0').replace(/[^0-9.-]/g,'')) || 0;
+      return {
+        num: o.num || o['Invoice #'] || o.invoice || o[0] || '',
+        date: toISODateFlexible(o.date || o.Date || o[1]),
+        client: o.client || o.Client || o[2] || '',
+        amount: num(o.amount || o.Amount || o[3]),
+        currency: (o.currency || o.Currency || o[4] || 'AED').toUpperCase(),
+        status: o.status || o.Status || o[5] || 'Unpaid',
+        paidAmount: num(o.paidAmount || o['Paid Amount'] || o[6] || 0)
       };
-      input.click();
     }
+    function normalizeCostRecord(v){
+      const num = s => Number(String(s||'0').replace(/[^0-9.-]/g,'')) || 0;
+      return {
+        id: 'cost_'+Date.now()+'_'+Math.random().toString(36).slice(2),
+        description: v.description || v.Description || v[1] || 'Expense',
+        date: toISODateFlexible(v.date || v.Date || v[0]),
+        category: v.category || v.Category || v[2] || 'Other',
+        amount: num(v.amount || v.Amount || v[3]),
+        currency: (v.currency || v.Currency || v[4] || 'AED').toUpperCase(),
+        deductible: String(v['Tax Deductible'] || v.deductible || v[5] || '').toLowerCase().startsWith('y'),
+        notes: v.notes || v.Notes || v[6] || ''
+      };
+    }
+
     function importInvoicesFromFile(){
       const input = document.createElement('input'); input.type='file'; input.accept='.csv,.json';
       input.onchange = (ev)=>{
@@ -684,17 +645,21 @@
         const reader = new FileReader();
         reader.onload = (e)=>{
           try{
+            let imported = [];
             const raw = stripBOM(e.target.result);
-            let imported=[];
-            if(file.name.toLowerCase().endsWith('.json')){
-              const json = JSON.parse(raw); if(!Array.isArray(json)) throw new Error('JSON must be an array of objects');
-              imported = json.map(normalizeInvoice);
+            if(file.name.endsWith('.json')){
+              const arr = JSON.parse(raw);
+              imported = (Array.isArray(arr)?arr:[]).map(normalizeInvoice);
             } else {
-              const rows = parseCSV(raw); const objs = normalizeObjects(rows);
+              const rows = parseCSV(raw);
+              const objs = normalizeObjects(rows);
               imported = objs.map(normalizeInvoice);
             }
-            if(imported.length){ financialData.invoices.push(...imported); saveData(); updateDashboard(); alert(`✅ Imported ${imported.length} invoices`); }
-            else alert('❌ No valid invoices found');
+            if(imported.length){
+              financialData.invoices.push(...imported);
+              saveData(); updateDashboard();
+              alert(`✅ Imported ${imported.length} invoices`);
+            } else alert('❌ No valid invoices found in the file');
           }catch(err){ alert('❌ Error importing invoices: '+err.message); }
         };
         reader.readAsText(file);
@@ -702,7 +667,51 @@
       input.click();
     }
 
-    // ===== Wix stubs
+    function importCostsFromFile(){
+      const input = document.createElement('input'); input.type='file'; input.accept='.csv,.json';
+      input.onchange = (ev)=>{
+        const file = ev.target.files[0]; if(!file) return;
+        const reader = new FileReader();
+        reader.onload = (e)=>{
+          try{
+            let imported = [];
+            const raw = stripBOM(e.target.result);
+            if(file.name.endsWith('.json')){
+              const arr = JSON.parse(raw);
+              imported = (Array.isArray(arr)?arr:[]).map(normalizeCostRecord);
+            } else {
+              const rows = parseCSV(raw);
+              const objs = normalizeObjects(rows);
+              imported = objs.map(normalizeCostRecord);
+            }
+            if(imported.length){
+              if(!financialData.expenses) financialData.expenses = [];
+              financialData.expenses.push(...imported);
+              saveData(); updateDashboard();
+              alert(`✅ Successfully imported ${imported.length} costs!`);
+            } else alert('❌ No valid costs found in the file');
+          }catch(err){ alert('❌ Error importing costs: '+err.message); }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+
+    function removeInvoice(num){
+      if(confirm(`Remove Invoice #${num}?`)){
+        financialData.invoices = financialData.invoices.filter(inv=>inv.num!==num);
+        saveData(); updateDashboard();
+      }
+    }
+    function removeCost(id){
+      const cost = (financialData.expenses||[]).find(exp=>exp.id===id);
+      if(confirm(`Remove "${cost?.description||'this cost'}"?`)){
+        financialData.expenses = (financialData.expenses||[]).filter(exp=>exp.id!==id);
+        saveData(); updateDashboard();
+      }
+    }
+
+    // ===== Wix + settings (stubs)
     function saveWixSettings(){
       financialData.wixSettings = {
         siteUrl: document.getElementById('wixSiteUrl').value,
@@ -737,7 +746,7 @@
         financialData.wixSettings.lastSync = new Date().toISOString();
         saveData(); updateWixConnectionStatus();
         alert('✅ Successfully connected to Wix!\n\n(Stub for real API.)');
-      },1200);
+      },1500);
     }
     function syncWithWix(){
       if(!financialData.wixSettings.connected){ alert('Please connect to Wix first'); return; }
@@ -747,14 +756,20 @@
         financialData.wixSettings.lastSync = new Date().toISOString();
         saveData(); updateWixConnectionStatus();
         alert('✅ Data synced with Wix!\n\n(Stub for real API.)');
-      },1600);
+      },2000);
     }
     function setupWixWebhook(){
       if(!financialData.wixSettings.connected){ alert('Please connect to Wix first'); return; }
       alert('🔧 Webhook Setup (demo)\nAuto-import invoices, expense tracking, and backups can be wired here.');
     }
 
-    // ===== Calculations & dashboard
+    // ===== Dashboard calculations
+    function setView(view, evt){
+      currentView = view;
+      document.querySelectorAll('.year-btn').forEach(b=>b.classList.remove('active'));
+      if (evt && evt.target) evt.target.classList.add('active');
+      updateDashboard();
+    }
     function saveData(){
       localStorage.setItem('poultonFinancialData', JSON.stringify(financialData));
       localStorage.setItem('poultonSettings', JSON.stringify(getSettings()));
@@ -775,33 +790,29 @@
         updateWixConnectionStatus();
       }
     }
-    function monthsInRange(dates){
-      const valid = dates.filter(Number.isFinite);
-      if(valid.length<1) return 12;
-      const min = Math.min(...valid), max = Math.max(...valid);
-      const a = new Date(min), b = new Date(max);
-      return (b.getFullYear()-a.getFullYear())*12 + (b.getMonth()-a.getMonth()+1);
-    }
+
     function updateDashboard(){
       const settings = getSettings();
       let filteredInvoices = financialData.invoices;
-      let filteredMissing = financialData.missingInvoices;
+      let filteredMissing = financialData.missingInvoices || [];
       let filteredExpenses = financialData.expenses || [];
 
       if(currentView!=='combined'){
         const year = parseInt(currentView);
         filteredInvoices = financialData.invoices.filter(inv => getYearFromDate(inv.date)===year);
-        filteredMissing = financialData.missingInvoices.filter(inv => getYearFromDate(inv.date)===year);
-        filteredExpenses = (financialData.expenses||[]).filter(exp => getYearFromDate(exp.date)===year);
+        filteredMissing = filteredMissing.filter(inv => getYearFromDate(inv.date)===year);
+        filteredExpenses = filteredExpenses.filter(exp => getYearFromDate(exp.date)===year);
       }
 
       // Currency buckets
       let usdInvoiced=0,aedInvoiced=0,usdPaid=0,aedPaid=0,usdOutstanding=0,aedOutstanding=0;
       filteredInvoices.forEach(inv=>{
-        if(inv.currency==='USD'){ usdInvoiced+=Number(inv.amount)||0; usdPaid+=Number(inv.paidAmount)||0; usdOutstanding+= (Number(inv.amount)||0) - (Number(inv.paidAmount)||0); }
-        else { aedInvoiced+=Number(inv.amount)||0; aedPaid+=Number(inv.paidAmount)||0; aedOutstanding+= (Number(inv.amount)||0) - (Number(inv.paidAmount)||0); }
+        if(inv.currency==='USD'){ usdInvoiced+=inv.amount; usdPaid+=(inv.paidAmount||0); usdOutstanding+=(inv.amount-(inv.paidAmount||0)); }
+        else { aedInvoiced+=inv.amount; aedPaid+=(inv.paidAmount||0); aedOutstanding+=(inv.amount-(inv.paidAmount||0)); }
       });
-      filteredMissing.forEach(inv=>{ if(inv.currency==='USD') usdPaid+=Number(inv.amount)||0; else aedPaid+=Number(inv.amount)||0; });
+      filteredMissing.forEach(inv=>{
+        if(inv.currency==='USD') usdPaid+=inv.amount; else aedPaid+=inv.amount;
+      });
 
       const totalCollected = convertToAED(usdPaid,'USD') + aedPaid;
       const totalInvoiced  = convertToAED(usdInvoiced,'USD') + aedInvoiced;
@@ -811,11 +822,11 @@
       // Expenses
       let totalExpenses=0, deductibleExpenses=0, nonDeductibleExpenses=0;
       filteredExpenses.forEach(exp=>{
-        const aed = convertToAED(Number(exp.amount)||0, exp.currency);
+        const aed = convertToAED(exp.amount, exp.currency);
         totalExpenses += aed; if(exp.deductible) deductibleExpenses += aed; else nonDeductibleExpenses += aed;
       });
-      const mSpan = monthsInRange(filteredExpenses.map(e=>+new Date(e.date)));
-      const monthlyAverage = totalExpenses / (mSpan||12);
+      const monthsInPeriod = 12;
+      const monthlyAverage = totalExpenses / monthsInPeriod;
 
       // Tax + Net
       const taxableProfit = totalCollected - deductibleExpenses;
@@ -823,20 +834,20 @@
       const netProfit = taxableProfit - estimatedTax;
 
       // Cards
-      document.getElementById('totalRevenue').innerHTML = `<div class="amount positive">${formatCurrency(totalCollected)}</div><small style="opacity:.8;font-size:.8em;">USD ${toFixed2(usdPaid)} + AED ${toFixed2(aedPaid)}</small>`;
+      document.getElementById('totalRevenue').innerHTML = `<div class="amount positive">${formatCurrency(totalCollected)}</div><small style="opacity:.8;font-size:.8em;">USD ${usdPaid.toLocaleString()} + AED ${aedPaid.toLocaleString()}</small>`;
       document.getElementById('totalCosts').textContent = formatCurrency(totalExpenses);
       document.getElementById('totalTax').textContent = formatCurrency(estimatedTax);
       document.getElementById('netProfit').textContent = formatCurrency(netProfit);
 
-      document.getElementById('totalInvoiced').innerHTML = `<div>${(filteredInvoices.length + filteredMissing.length)} Invoices</div><small style="opacity:.8;">USD ${toFixed2(usdInvoiced)} + AED ${toFixed2(aedInvoiced)}</small>`;
-      document.getElementById('totalCollected').innerHTML = `<div>${formatCurrency(totalCollected)}</div><small style="opacity:.8;">USD ${toFixed2(usdPaid)} + AED ${toFixed2(aedPaid)}</small>`;
-      document.getElementById('totalOutstanding').innerHTML = `<div>${formatCurrency(totalOutstanding)}</div><small style="opacity:.8;">USD ${toFixed2(usdOutstanding)} + AED ${toFixed2(aedOutstanding)}</small>`;
+      document.getElementById('totalInvoiced').innerHTML = `<div>${(filteredInvoices.length + filteredMissing.length)} Invoices</div><small style="opacity:.8;">USD ${usdInvoiced.toLocaleString()} + AED ${aedInvoiced.toLocaleString()}</small>`;
+      document.getElementById('totalCollected').innerHTML = `<div>${formatCurrency(totalCollected)}</div><small style="opacity:.8;">USD ${usdPaid.toLocaleString()} + AED ${aedPaid.toLocaleString()}</small>`;
+      document.getElementById('totalOutstanding').innerHTML = `<div>${formatCurrency(totalOutstanding)}</div><small style="opacity:.8;">USD ${usdOutstanding.toLocaleString()} + AED ${aedOutstanding.toLocaleString()}</small>`;
       document.getElementById('collectionRate').textContent = `${collectionRate.toFixed(1)}%`;
 
-      document.getElementById('usdRevenue').textContent = `$${toFixed2(usdPaid)}`;
-      document.getElementById('aedRevenue').textContent = `AED ${toFixed2(aedPaid)}`;
-      document.getElementById('usdOutstanding').textContent = `$${toFixed2(usdOutstanding)}`;
-      document.getElementById('aedOutstanding').textContent = `AED ${toFixed2(aedOutstanding)}`;
+      document.getElementById('usdRevenue').textContent = `$${usdPaid.toLocaleString()}`;
+      document.getElementById('aedRevenue').textContent = `AED ${aedPaid.toLocaleString()}`;
+      document.getElementById('usdOutstanding').textContent = `$${usdOutstanding.toLocaleString()}`;
+      document.getElementById('aedOutstanding').textContent = `AED ${aedOutstanding.toLocaleString()}`;
 
       document.getElementById('totalExpenses').textContent = formatCurrency(totalExpenses);
       document.getElementById('deductibleTotal').textContent = formatCurrency(deductibleExpenses);
@@ -846,18 +857,18 @@
       // Client analysis
       const clientTotals = {}; let totalClientRevenue = 0;
       [...filteredInvoices, ...filteredMissing].forEach(inv=>{
-        const aed = convertToAED(Number(inv.amount) || Number(inv.paidAmount) || 0, inv.currency);
+        const aed = convertToAED(inv.amount || inv.paidAmount || 0, inv.currency);
         totalClientRevenue += aed;
         if(!clientTotals[inv.client]) clientTotals[inv.client] = { USD:0, AED:0 };
-        clientTotals[inv.client][inv.currency] += Number(inv.amount || inv.paidAmount || 0);
+        clientTotals[inv.client][inv.currency] += (inv.amount || inv.paidAmount || 0);
       });
       const sorted = Object.entries(clientTotals).map(([client, cur])=>{
         const aedTot = convertToAED(cur.USD,'USD') + cur.AED; return [client, cur, aedTot];
       }).sort((a,b)=>b[2]-a[2]).slice(0,5);
       const clientHTML = sorted.map(([client, cur, aedTot])=>{
         const pct = totalClientRevenue>0 ? ((aedTot/totalClientRevenue)*100).toFixed(1) : 0;
-        const display = client && client.length>25 ? client.substring(0,25)+'...' : (client||'Unknown');
-        return `<div class="metric-row"><span class="metric-label">${display}</span><span class="metric-value">AED ${toFixed2(aedTot)} (${pct}%)</span></div>`;
+        const display = client.length>25 ? client.substring(0,25)+'...' : client;
+        return `<div class="metric-row"><span class="metric-label">${display}</span><span class="metric-value">${formatCurrency(aedTot)} (${pct}%)</span></div>`;
       }).join('');
       document.getElementById('clientAnalysis').innerHTML = clientHTML || `<div class="metric-row"><span class="metric-label">No data available</span><span class="metric-value">-</span></div>`;
 
@@ -873,14 +884,14 @@
       if(window.monthlyChart) window.monthlyChart.destroy();
       const monthly = {};
       invoices.forEach(inv=>{
-        const d = new Date(inv.date); const key = isFinite(d)? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` : 'Unknown';
+        const d = new Date(inv.date); const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
         if(!monthly[key]) monthly[key] = { invoiced:0, collected:0 };
-        const aedAmt = convertToAED(Number(inv.amount)||0, inv.currency);
-        const aedPaid = convertToAED(Number(inv.paidAmount)||0, inv.currency);
+        const aedAmt = convertToAED(inv.amount, inv.currency);
+        const aedPaid = convertToAED(inv.paidAmount||0, inv.currency);
         monthly[key].invoiced += aedAmt; monthly[key].collected += aedPaid;
       });
       const keys = Object.keys(monthly).sort();
-      const labels = keys.map(k=>{ const [y,m]=k.split('-'); if(!m) return k; return new Date(y,m-1).toLocaleDateString('en-GB',{month:'short',year:'numeric'}); });
+      const labels = keys.map(k=>{ const [y,m]=k.split('-'); return new Date(y,m-1).toLocaleDateString('en-US',{month:'short',year:'numeric'}); });
       const invoiced = keys.map(k=>monthly[k].invoiced);
       const collected = keys.map(k=>monthly[k].collected);
       window.monthlyChart = new Chart(ctx, {
@@ -888,8 +899,8 @@
         data:{
           labels,
           datasets:[
-            { label:'Invoiced (AED)', data:invoiced, borderColor:'#4A90A4', backgroundColor:'rgba(74,144,164,0.1)', tension:0.4, fill:true },
-            { label:'Collected (AED)', data:collected, borderColor:'#2A9D8F', backgroundColor:'rgba(42,157,143,0.1)', tension:0.4, fill:true }
+            { label:'Invoiced', data:invoiced, borderColor:'#4A90A4', backgroundColor:'rgba(74,144,164,0.1)', tension:0.4, fill:true },
+            { label:'Collected', data:collected, borderColor:'#2A9D8F', backgroundColor:'rgba(42,157,143,0.1)', tension:0.4, fill:true }
           ]
         },
         options:{
@@ -897,14 +908,14 @@
           plugins:{ legend:{ position:'top', labels:{ usePointStyle:true, padding:20, font:{ weight:600 } } } },
           scales:{
             x:{ grid:{ display:false }, ticks:{ font:{ weight:500 } } },
-            y:{ beginAtZero:true, grid:{ color:'rgba(0,0,0,0.05)' }, ticks:{ callback:v=>'AED '+Number(v).toLocaleString('en-GB'), font:{ weight:500 } } }
+            y:{ beginAtZero:true, grid:{ color:'rgba(0,0,0,0.05)' }, ticks:{ callback:v=>'AED '+Number(v).toLocaleString(), font:{ weight:500 } } }
           },
           interaction:{ intersect:false, mode:'index' }
         }
       });
     }
 
-    // ===== Utilities
+    // Quick utilities
     function seedDemo(){
       const today = new Date().toISOString().split('T')[0];
       const demo = [
@@ -933,17 +944,12 @@
       alert('🧹 Cleared. Fresh start.');
     }
 
-    // ===== Init
-    function setView(view, evt){
-      currentView = view;
-      document.querySelectorAll('.year-btn').forEach(b=>b.classList.remove('active'));
-      if (evt && evt.target) evt.target.classList.add('active');
-      updateDashboard();
-    }
     function updateCalculations(){ saveData(); updateDashboard(); }
+
+    // Init
     loadSavedData();
     updateDashboard();
-    setInterval(saveData, 30000); // auto-save
+    setInterval(saveData, 30000);
     document.getElementById('newCostDate').value = new Date().toISOString().split('T')[0];
     document.getElementById('newInvoiceDate').value = new Date().toISOString().split('T')[0];
   </script>
