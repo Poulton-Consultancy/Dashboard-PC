@@ -379,579 +379,97 @@
 
   <button class="print-button" onclick="window.print()">🖨️ Print Dashboard</button>
 
-  <script>
-    // ===== Seeded Financial Data (invoices retained; expenses empty by default)
-    let financialData = {
-      invoices: [
-        {"num":"0000031","date":"2025-06-30","client":"Thrift for Good","currency":"AED","amount":5600.0,"paidAmount":5600.0,"status":"Paid"},
-        {"num":"0000030","date":"2025-05-31","client":"Thrift for Good","currency":"AED","amount":1000.0,"paidAmount":1000.0,"status":"Paid"},
-        {"num":"0000029","date":"2025-04-25","client":"Nature Adventure LLC","currency":"AED","amount":8000.0,"paidAmount":8000.0,"status":"Paid"},
-        {"num":"0000028","date":"2025-04-16","client":"Suzanne Vandenbriel","currency":"AED","amount":400.0,"paidAmount":400.0,"status":"Paid"},
-        {"num":"0000027","date":"2025-03-23","client":"Nature Adventure LLC","currency":"AED","amount":8000.0,"paidAmount":8000.0,"status":"Paid"},
-        {"num":"0000026","date":"2025-03-10","client":"MTHN Consultancy Project","currency":"AED","amount":400.0,"paidAmount":400.0,"status":"Paid"},
-        {"num":"0000025","date":"2025-03-03","client":"Cool Down Corporate Social","currency":"AED","amount":1800.0,"paidAmount":1800.0,"status":"Paid"},
-        {"num":"0000024","date":"2025-02-28","client":"IBCCES","currency":"USD","amount":527.0,"paidAmount":527.0,"status":"Paid"},
-        {"num":"0000023","date":"2025-02-26","client":"Nature Adventure LLC","currency":"AED","amount":8000.0,"paidAmount":8000.0,"status":"Paid"},
-        {"num":"0000022","date":"2025-02-26","client":"IBCCES","currency":"USD","amount":3200.0,"paidAmount":3200.0,"status":"Paid"},
-        {"num":"0000021","date":"2025-01-24","client":"IBCCES","currency":"USD","amount":6660.0,"paidAmount":6660.0,"status":"Paid"},
-        {"num":"0000019","date":"2025-01-24","client":"Nature Adventure LLC","currency":"AED","amount":8000.0,"paidAmount":8000.0,"status":"Paid"},
-        {"num":"0000018","date":"2024-12-30","client":"IBCCES","currency":"USD","amount":7147.0,"paidAmount":7147.0,"status":"Paid"},
-        {"num":"0000017","date":"2024-12-27","client":"Nature Adventure LLC","currency":"AED","amount":8000.0,"paidAmount":8000.0,"status":"Paid"},
-        {"num":"0000016","date":"2024-12-02","client":"IBCCES","currency":"USD","amount":6451.77,"paidAmount":6451.77,"status":"Paid"}
-      ],
-      expenses: [],
-      missingInvoices: [],
-      wixSettings: { siteUrl:'', apiKey:'', autoSyncFreq:'manual', lastSync:null, connected:false }
-    };
+ 
+<script>
+/* ===== Live mode: always read CSVs, ignore localStorage when ?live=1 ===== */
+const LIVE_MODE = new URLSearchParams(location.search).get('live') === '1';
+const BUILD = (document.currentScript && document.currentScript.getAttribute('data-build')) || Date.now();
+const INVOICES_URL = `./invoices.csv?v=${BUILD}`;
+const COSTS_URL    = `./costs.csv?v=${BUILD}`;
+const FX = { AED: 1, USD: 3.67 };
 
-    let currentView = 'combined';
+const money = n => Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const num = v => { const n = Number(String(v??'').replace(/[, ]/g,'')); return isFinite(n)?n:0; };
+const toAED = (amt, cur='AED') => num(amt) * (FX[(cur||'AED').toUpperCase().trim()] ?? 1);
 
-    // ===== Settings & utils
-    function getSettings(){
-      return {
-        taxRate: parseFloat(document.getElementById('taxRate').value)||0,
-        exchangeRate: parseFloat(document.getElementById('exchangeRate').value)||3.67,
-        taxYear: document.getElementById('taxYear').value || '2025'
-      };
-    }
-    function toFixed2(n){return Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
-    function convertToAED(amount,currency){ const s=getSettings(); return currency==='USD'? amount*s.exchangeRate : amount; }
-    function formatCurrency(amount,currency='AED'){ return currency==='USD' ? `$${toFixed2(amount)}` : `AED ${toFixed2(amount)}`; }
-    function getYearFromDate(d){ const dt=new Date(d); return isFinite(dt)? dt.getFullYear(): NaN; }
+const monthKey = (d)=>{
+  if(!d) return 'Unknown';
+  const iso = new Date(String(d).trim());
+  if(!isNaN(iso)) return `${iso.getFullYear()}-${String(iso.getMonth()+1).padStart(2,'0')}`;
+  return 'Unknown';
+};
 
-    // ===== CSV + Date helpers (robust)
-    function detectDelimiter(sample){
-      const cand = [',',';','\t'];
-      const top = String(sample||'').split('\n',10).join('\n');
-      const counts = cand.map(d => (top.match(new RegExp(d,'g'))||[]).length);
-      return cand[counts.indexOf(Math.max(...counts))] || ',';
-    }
-    function stripBOM(s){ s = String(s||''); return s.charCodeAt(0)===0xFEFF ? s.slice(1) : s; }
-    function parseCSV(text){
-      text = stripBOM(String(text||''));
-      const delim = detectDelimiter(text);
-      const rows=[]; let i=0, cur='', quoted=false, row=[];
-      while(i<text.length){
-        const c=text[i++];
-        if(c === '"'){
-          if(quoted && text[i] === '"'){ cur += '"'; i++; }
-          else { quoted = !quoted; }
-        } else if(c === delim && !quoted){
-          row.push(cur); cur='';
-        } else if((c === '\n' || c === '\r') && !quoted){
-          if(cur.length || row.length){ row.push(cur); rows.push(row); row=[]; cur=''; }
-        } else {
-          cur += c;
-        }
-      }
-      if(cur.length || row.length){ row.push(cur); rows.push(row); }
-      return rows;
-    }
-    function normalizeObjects(rows){
-      if(!rows.length) return [];
-      const header = rows[0].map(h => (h||'').trim());
-      const looksLikeHeader = header.some(h => /date|amount|currency|client|invoice|description|category|status|paid/i.test(h));
-      if(looksLikeHeader){
-        return rows.slice(1)
-          .filter(r => r.some(c => String(c).trim()!==''))
-          .map(r => { const o={}; header.forEach((h,idx)=>o[h]=(r[idx]??'').toString().trim()); return o; });
-      }
-      return rows
-        .filter(r => r.some(c => String(c).trim()!==''))
-        .map(r => ({0:(r[0]||'').trim(),1:(r[1]||'').trim(),2:(r[2]||'').trim(),3:(r[3]||'').trim(),4:(r[4]||'').trim(),5:(r[5]||'').trim(),6:(r[6]||'').trim()}));
-    }
-    function toISODateFlexible(d){
-      if(!d) return new Date().toISOString().slice(0,10);
-      const s = String(d).trim();
-      if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // ISO
-      const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/); // EU/US
-      if(m){
-        let [_,a,b,c]=m; a=+a; b=+b; c=+c; if(c<100) c+=2000;
-        const dd = a>12 ? a : b; const mm = a>12 ? b : a;
-        return `${c}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
-      }
-      const t = new Date(s);
-      return isFinite(t) ? t.toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+const csv = async (url)=>{
+  const res = await fetch(url, { cache:'no-store' });
+  if(!res.ok) throw new Error(`Load fail ${url} ${res.status}`);
+  const text = await res.text();
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const headers = lines.shift().split(',').map(s=>s.trim());
+  return lines.map(line=>{
+    const cells = line.split(',').map(s=>s.trim());
+    const o={}; headers.forEach((h,i)=>o[h]=cells[i]); return o;
+  });
+};
+
+// Replace/save guards so viewers don’t write localStorage in live mode
+const _saveData = window.saveData;
+window.saveData = function(){
+  if (!LIVE_MODE && typeof _saveData === 'function') _saveData();
+};
+
+// On first load in LIVE_MODE, ignore any localStorage and hydrate from CSV
+(async ()=>{
+  try{
+    if('serviceWorker' in navigator){
+      navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r=>r.unregister()));
     }
 
-    // ===== UI: tables and grids
-    function statusToClass(status){
-      const s = String(status||'').toLowerCase();
-      if(s.includes('partial')) return 'status-partially';
-      if(s.includes('paid')) return 'status-paid';
-      return 'status-unpaid';
-    }
-    function updateInvoiceTable(invoices){
-      const tbody = document.getElementById('invoiceTableBody'); tbody.innerHTML = '';
-      invoices.forEach(inv=>{
-        const row = tbody.insertRow();
-        row.innerHTML = `
-          <td><strong>#${inv.num}</strong></td>
-          <td>${new Date(inv.date).toLocaleDateString()}</td>
-          <td><strong>${inv.client}</strong></td>
-          <td><strong>${formatCurrency(inv.amount, inv.currency)}</strong></td>
-          <td><span class="status-badge ${statusToClass(inv.status)}">${inv.status}</span></td>
-          <td><button class="btn btn-danger" onclick="removeInvoice('${inv.num}')">Remove</button></td>
-        `;
-      });
-    }
-    function updateCostTable(expenses){
-      const tbody = document.getElementById('costTableBody'); tbody.innerHTML = '';
-      expenses.forEach(exp=>{
-        const row = tbody.insertRow();
-        row.innerHTML = `
-          <td>${new Date(exp.date).toLocaleDateString()}</td>
-          <td><strong>${exp.description}</strong></td>
-          <td><span class="status-badge status-${(exp.category||'other').toLowerCase()}">${exp.category}</span></td>
-          <td><strong>${formatCurrency(exp.amount, exp.currency)}</strong></td>
-          <td><span class="status-badge ${exp.deductible ? 'status-paid' : 'status-unpaid'}">${exp.deductible ? 'Yes' : 'No'}</span></td>
-          <td>${exp.notes || '-'}</td>
-          <td><button class="btn btn-danger" onclick="removeCost('${exp.id}')">Remove</button></td>
-        `;
-      });
-    }
-    function updateCostSummaryGrid(expenses){
-      const grid = document.getElementById('costSummaryGrid');
-      const categories = {};
-      const categoryList = ['Licensing','Office','Marketing','Travel','Technology','Professional','Training','Insurance','Utilities','Salary','Other'];
-      categoryList.forEach(cat => categories[cat] = { total:0, count:0 });
-
-      expenses.forEach(exp=>{
-        const aedAmount = convertToAED(Number(exp.amount)||0, exp.currency);
-        const cat = exp.category && categories[exp.category] ? exp.category : 'Other';
-        categories[cat].total += aedAmount; categories[cat].count += 1;
-      });
-
-      grid.innerHTML = Object.entries(categories).map(([category,data]) => `
-        <div class="cost-category-card ${category.toLowerCase()}">
-          <h4>${category}</h4>
-          <div class="amount">AED ${toFixed2(data.total)}</div>
-          <div class="count">${data.count} expense${data.count!==1?'s':''}</div>
-        </div>
-      `).join('');
-    }
-
-    // ===== CRUD (add/remove)
-    function addNewInvoice(){
-      const num = document.getElementById('newInvoiceNum').value;
-      const date = document.getElementById('newInvoiceDate').value;
-      const client = document.getElementById('newInvoiceClient').value;
-      const amount = parseFloat(document.getElementById('newInvoiceAmount').value);
-      const currency = document.getElementById('newInvoiceCurrency').value;
-      const status = document.getElementById('newInvoiceStatus').value;
-      if(!num || !date || !client || isNaN(amount)){ alert('Please fill in all required fields'); return; }
-      financialData.invoices.push({ num, date, client, amount, currency, status, paidAmount: status.toLowerCase().includes('paid')? amount : 0 });
-      document.getElementById('newInvoiceNum').value=''; document.getElementById('newInvoiceDate').value='';
-      document.getElementById('newInvoiceClient').value=''; document.getElementById('newInvoiceAmount').value='';
-      saveData(); updateDashboard();
-      if(financialData.wixSettings.autoSyncFreq!=='manual') syncWithWix();
-    }
-    function addNewCost(){
-      const description = document.getElementById('newCostDesc').value;
-      const date = document.getElementById('newCostDate').value;
-      const amount = parseFloat(document.getElementById('newCostAmount').value);
-      const currency = document.getElementById('newCostCurrency').value;
-      const category = document.getElementById('newCostCategory').value;
-      const deductible = document.getElementById('newCostDeductible').value === 'true';
-      const notes = document.getElementById('newCostNotes').value;
-      if(!description || !date || isNaN(amount)){ alert('Please fill in all required fields (Description, Date, Amount)'); return; }
-      const newCost = { id:'cost_'+Date.now(), description, date, amount, currency, category, deductible, notes, recurring:false };
-      if(!financialData.expenses) financialData.expenses = [];
-      financialData.expenses.push(newCost);
-      document.getElementById('newCostDesc').value=''; document.getElementById('newCostDate').value='';
-      document.getElementById('newCostAmount').value=''; document.getElementById('newCostNotes').value='';
-      saveData(); updateDashboard();
-      if(financialData.wixSettings.autoSyncFreq!=='manual') syncWithWix();
-      alert('✅ Cost added successfully!');
-    }
-    function addRecurringCost(){
-      const description = document.getElementById('newCostDesc').value;
-      const date = document.getElementById('newCostDate').value;
-      const amount = parseFloat(document.getElementById('newCostAmount').value);
-      const currency = document.getElementById('newCostCurrency').value;
-      const category = document.getElementById('newCostCategory').value;
-      const deductible = document.getElementById('newCostDeductible').value === 'true';
-      const notes = document.getElementById('newCostNotes').value;
-      if(!description || !date || isNaN(amount)){ alert('Please fill in all required fields (Description, Date, Amount)'); return; }
-      const frequency = prompt('How often should this cost recur?\n1. Monthly\n2. Quarterly\n3. Yearly\n\nEnter 1, 2, or 3:','1');
-      if(!frequency || !['1','2','3'].includes(frequency)){ alert('Invalid frequency selected'); return; }
-      const map = {'1':'monthly','2':'quarterly','3':'yearly'};
-      const selectedFreq = map[frequency];
-      const newCost = { id:'cost_'+Date.now(), description: description+` (${selectedFreq})`, date, amount, currency, category, deductible, notes: (notes||'')+` | Recurring: ${selectedFreq}`, recurring:true, frequency:selectedFreq };
-      if(!financialData.expenses) financialData.expenses = [];
-      financialData.expenses.push(newCost);
-      document.getElementById('newCostDesc').value=''; document.getElementById('newCostDate').value='';
-      document.getElementById('newCostAmount').value=''; document.getElementById('newCostNotes').value='';
-      saveData(); updateDashboard();
-      alert(`✅ Recurring ${selectedFreq} cost added successfully!`);
-    }
-
-    // ===== IMPORT / EXPORT
-    function downloadCSV(filename, rows){
-      const csv = rows.map(r => r.map(cell=>{
-        const s = (cell??'').toString();
-        return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
-      }).join(',')).join('\n');
-      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-    }
-    function exportCostsCSV(){
-      const header = ["Date","Description","Category","Amount","Currency","Tax Deductible","Notes"];
-      const rows = (financialData.expenses||[]).map(c=>[
-        c.date||"", c.description||"", c.category||"", c.amount!=null?c.amount:"", c.currency||"AED", c.deductible?"Yes":"No", c.notes||""
-      ]);
-      downloadCSV('costs.csv', [header, ...rows]);
-    }
-    function exportInvoicesCSV(){
-      const header = ["Invoice #","Date","Client","Amount","Currency","Status","Paid Amount"];
-      const rows = (financialData.invoices||[]).map(i=>[
-        i.num||"", i.date||"", i.client||"", i.amount!=null?i.amount:"", i.currency||"AED", i.status||"Unpaid", i.paidAmount!=null?i.paidAmount:""
-      ]);
-      downloadCSV('invoices.csv', [header, ...rows]);
-    }
-
-    function normalizeInvoice(o){
-      const num = s => Number(String(s||'0').replace(/[^0-9.-]/g,'')) || 0;
-      return {
-        num: o.num || o['Invoice #'] || o.invoice || o[0] || '',
-        date: toISODateFlexible(o.date || o.Date || o[1]),
-        client: o.client || o.Client || o[2] || '',
-        amount: num(o.amount || o.Amount || o[3]),
-        currency: (o.currency || o.Currency || o[4] || 'AED').toUpperCase(),
-        status: o.status || o.Status || o[5] || 'Unpaid',
-        paidAmount: num(o.paidAmount || o['Paid Amount'] || o[6] || 0)
-      };
-    }
-    function normalizeCostRecord(v){
-      const num = s => Number(String(s||'0').replace(/[^0-9.-]/g,'')) || 0;
-      return {
-        id: 'cost_'+Date.now()+'_'+Math.random().toString(36).slice(2),
-        description: v.description || v.Description || v[1] || 'Expense',
-        date: toISODateFlexible(v.date || v.Date || v[0]),
-        category: v.category || v.Category || v[2] || 'Other',
-        amount: num(v.amount || v.Amount || v[3]),
-        currency: (v.currency || v.Currency || v[4] || 'AED').toUpperCase(),
-        deductible: String(v['Tax Deductible'] || v.deductible || v[5] || '').toLowerCase().startsWith('y'),
-        notes: v.notes || v.Notes || v[6] || ''
-      };
-    }
-
-    function importInvoicesFromFile(){
-      const input = document.createElement('input'); input.type='file'; input.accept='.csv,.json';
-      input.onchange = (ev)=>{
-        const file = ev.target.files[0]; if(!file) return;
-        const reader = new FileReader();
-        reader.onload = (e)=>{
-          try{
-            let imported = [];
-            const raw = stripBOM(e.target.result);
-            if(file.name.endsWith('.json')){
-              const arr = JSON.parse(raw);
-              imported = (Array.isArray(arr)?arr:[]).map(normalizeInvoice);
-            } else {
-              const rows = parseCSV(raw);
-              const objs = normalizeObjects(rows);
-              imported = objs.map(normalizeInvoice);
-            }
-            if(imported.length){
-              financialData.invoices.push(...imported);
-              saveData(); updateDashboard();
-              alert(`✅ Imported ${imported.length} invoices`);
-            } else alert('❌ No valid invoices found in the file');
-          }catch(err){ alert('❌ Error importing invoices: '+err.message); }
-        };
-        reader.readAsText(file);
-      };
-      input.click();
-    }
-
-    function importCostsFromFile(){
-      const input = document.createElement('input'); input.type='file'; input.accept='.csv,.json';
-      input.onchange = (ev)=>{
-        const file = ev.target.files[0]; if(!file) return;
-        const reader = new FileReader();
-        reader.onload = (e)=>{
-          try{
-            let imported = [];
-            const raw = stripBOM(e.target.result);
-            if(file.name.endsWith('.json')){
-              const arr = JSON.parse(raw);
-              imported = (Array.isArray(arr)?arr:[]).map(normalizeCostRecord);
-            } else {
-              const rows = parseCSV(raw);
-              const objs = normalizeObjects(rows);
-              imported = objs.map(normalizeCostRecord);
-            }
-            if(imported.length){
-              if(!financialData.expenses) financialData.expenses = [];
-              financialData.expenses.push(...imported);
-              saveData(); updateDashboard();
-              alert(`✅ Successfully imported ${imported.length} costs!`);
-            } else alert('❌ No valid costs found in the file');
-          }catch(err){ alert('❌ Error importing costs: '+err.message); }
-        };
-        reader.readAsText(file);
-      };
-      input.click();
-    }
-
-    function removeInvoice(num){
-      if(confirm(`Remove Invoice #${num}?`)){
-        financialData.invoices = financialData.invoices.filter(inv=>inv.num!==num);
-        saveData(); updateDashboard();
-      }
-    }
-    function removeCost(id){
-      const cost = (financialData.expenses||[]).find(exp=>exp.id===id);
-      if(confirm(`Remove "${cost?.description||'this cost'}"?`)){
-        financialData.expenses = (financialData.expenses||[]).filter(exp=>exp.id!==id);
-        saveData(); updateDashboard();
-      }
-    }
-
-    // ===== Wix + settings (stubs)
-    function saveWixSettings(){
-      financialData.wixSettings = {
-        siteUrl: document.getElementById('wixSiteUrl').value,
-        apiKey: document.getElementById('wixApiKey').value,
-        autoSyncFreq: document.getElementById('autoSyncFreq').value,
-        lastSync: financialData.wixSettings.lastSync,
-        connected: financialData.wixSettings.connected
-      };
-      saveData();
-    }
-    function updateWixConnectionStatus(){
-      const statusDiv = document.getElementById('wixConnectionStatus');
-      if(financialData.wixSettings.connected){
-        statusDiv.className='integration-status connected';
-        statusDiv.innerHTML = '<span>🟢</span> Connected to Wix - Last sync: '+(financialData.wixSettings.lastSync? new Date(financialData.wixSettings.lastSync).toLocaleString():'Never');
-      } else if(financialData.wixSettings.siteUrl && financialData.wixSettings.apiKey){
-        statusDiv.className='integration-status pending';
-        statusDiv.innerHTML = '<span>🟡</span> Ready to Connect - Click "Test Connection"';
-      } else {
-        statusDiv.className='integration-status disconnected';
-        statusDiv.innerHTML = '<span>🔴</span> Not Connected to Wix';
-      }
-    }
-    function testWixConnection(){
-      const siteUrl = document.getElementById('wixSiteUrl').value;
-      const apiKey = document.getElementById('wixApiKey').value;
-      if(!siteUrl || !apiKey){ alert('Please enter both Wix Site URL and API Key'); return; }
-      const statusDiv = document.getElementById('wixConnectionStatus');
-      statusDiv.className='integration-status pending'; statusDiv.innerHTML='<span>🟡</span> Testing connection...';
-      setTimeout(()=>{
-        financialData.wixSettings.connected = true;
-        financialData.wixSettings.lastSync = new Date().toISOString();
-        saveData(); updateWixConnectionStatus();
-        alert('✅ Successfully connected to Wix!\n\n(Stub for real API.)');
-      },1500);
-    }
-    function syncWithWix(){
-      if(!financialData.wixSettings.connected){ alert('Please connect to Wix first'); return; }
-      const statusDiv = document.getElementById('wixConnectionStatus');
-      statusDiv.className='integration-status pending'; statusDiv.innerHTML='<span>🟡</span> Syncing with Wix...';
-      setTimeout(()=>{
-        financialData.wixSettings.lastSync = new Date().toISOString();
-        saveData(); updateWixConnectionStatus();
-        alert('✅ Data synced with Wix!\n\n(Stub for real API.)');
-      },2000);
-    }
-    function setupWixWebhook(){
-      if(!financialData.wixSettings.connected){ alert('Please connect to Wix first'); return; }
-      alert('🔧 Webhook Setup (demo)\nAuto-import invoices, expense tracking, and backups can be wired here.');
-    }
-
-    // ===== Dashboard calculations
-    function setView(view, evt){
-      currentView = view;
-      document.querySelectorAll('.year-btn').forEach(b=>b.classList.remove('active'));
-      if (evt && evt.target) evt.target.classList.add('active');
-      updateDashboard();
-    }
-    function saveData(){
-      localStorage.setItem('poultonFinancialData', JSON.stringify(financialData));
-      localStorage.setItem('poultonSettings', JSON.stringify(getSettings()));
-    }
-    function loadSavedData(){
-      const saved = localStorage.getItem('poultonFinancialData'); if(saved) financialData = JSON.parse(saved);
-      const savedSettings = localStorage.getItem('poultonSettings');
-      if(savedSettings){
-        const s = JSON.parse(savedSettings);
-        document.getElementById('taxRate').value = s.taxRate ?? 0;
-        document.getElementById('exchangeRate').value = s.exchangeRate ?? 3.67;
-        document.getElementById('taxYear').value = s.taxYear ?? '2025';
-      }
-      if(financialData.wixSettings){
-        document.getElementById('wixSiteUrl').value = financialData.wixSettings.siteUrl || '';
-        document.getElementById('wixApiKey').value = financialData.wixSettings.apiKey || '';
-        document.getElementById('autoSyncFreq').value = financialData.wixSettings.autoSyncFreq || 'manual';
-        updateWixConnectionStatus();
-      }
-    }
-
-    function updateDashboard(){
-      const settings = getSettings();
-      let filteredInvoices = financialData.invoices;
-      let filteredMissing = financialData.missingInvoices || [];
-      let filteredExpenses = financialData.expenses || [];
-
-      if(currentView!=='combined'){
-        const year = parseInt(currentView);
-        filteredInvoices = financialData.invoices.filter(inv => getYearFromDate(inv.date)===year);
-        filteredMissing = filteredMissing.filter(inv => getYearFromDate(inv.date)===year);
-        filteredExpenses = filteredExpenses.filter(exp => getYearFromDate(exp.date)===year);
-      }
-
-      // Currency buckets
-      let usdInvoiced=0,aedInvoiced=0,usdPaid=0,aedPaid=0,usdOutstanding=0,aedOutstanding=0;
-      filteredInvoices.forEach(inv=>{
-        if(inv.currency==='USD'){ usdInvoiced+=inv.amount; usdPaid+=(inv.paidAmount||0); usdOutstanding+=(inv.amount-(inv.paidAmount||0)); }
-        else { aedInvoiced+=inv.amount; aedPaid+=(inv.paidAmount||0); aedOutstanding+=(inv.amount-(inv.paidAmount||0)); }
-      });
-      filteredMissing.forEach(inv=>{
-        if(inv.currency==='USD') usdPaid+=inv.amount; else aedPaid+=inv.amount;
-      });
-
-      const totalCollected = convertToAED(usdPaid,'USD') + aedPaid;
-      const totalInvoiced  = convertToAED(usdInvoiced,'USD') + aedInvoiced;
-      const totalOutstanding = convertToAED(usdOutstanding,'USD') + aedOutstanding;
-      const collectionRate = totalInvoiced>0 ? ((totalCollected/(totalCollected+totalOutstanding))*100) : 100;
-
-      // Expenses
-      let totalExpenses=0, deductibleExpenses=0, nonDeductibleExpenses=0;
-      filteredExpenses.forEach(exp=>{
-        const aed = convertToAED(exp.amount, exp.currency);
-        totalExpenses += aed; if(exp.deductible) deductibleExpenses += aed; else nonDeductibleExpenses += aed;
-      });
-      const monthsInPeriod = 12;
-      const monthlyAverage = totalExpenses / monthsInPeriod;
-
-      // Tax + Net
-      const taxableProfit = totalCollected - deductibleExpenses;
-      const estimatedTax = Math.max(0, taxableProfit * (settings.taxRate/100));
-      const netProfit = taxableProfit - estimatedTax;
-
-      // Cards
-      document.getElementById('totalRevenue').innerHTML = `<div class="amount positive">${formatCurrency(totalCollected)}</div><small style="opacity:.8;font-size:.8em;">USD ${usdPaid.toLocaleString()} + AED ${aedPaid.toLocaleString()}</small>`;
-      document.getElementById('totalCosts').textContent = formatCurrency(totalExpenses);
-      document.getElementById('totalTax').textContent = formatCurrency(estimatedTax);
-      document.getElementById('netProfit').textContent = formatCurrency(netProfit);
-
-      document.getElementById('totalInvoiced').innerHTML = `<div>${(filteredInvoices.length + filteredMissing.length)} Invoices</div><small style="opacity:.8;">USD ${usdInvoiced.toLocaleString()} + AED ${aedInvoiced.toLocaleString()}</small>`;
-      document.getElementById('totalCollected').innerHTML = `<div>${formatCurrency(totalCollected)}</div><small style="opacity:.8;">USD ${usdPaid.toLocaleString()} + AED ${aedPaid.toLocaleString()}</small>`;
-      document.getElementById('totalOutstanding').innerHTML = `<div>${formatCurrency(totalOutstanding)}</div><small style="opacity:.8;">USD ${usdOutstanding.toLocaleString()} + AED ${aedOutstanding.toLocaleString()}</small>`;
-      document.getElementById('collectionRate').textContent = `${collectionRate.toFixed(1)}%`;
-
-      document.getElementById('usdRevenue').textContent = `$${usdPaid.toLocaleString()}`;
-      document.getElementById('aedRevenue').textContent = `AED ${aedPaid.toLocaleString()}`;
-      document.getElementById('usdOutstanding').textContent = `$${usdOutstanding.toLocaleString()}`;
-      document.getElementById('aedOutstanding').textContent = `AED ${aedOutstanding.toLocaleString()}`;
-
-      document.getElementById('totalExpenses').textContent = formatCurrency(totalExpenses);
-      document.getElementById('deductibleTotal').textContent = formatCurrency(deductibleExpenses);
-      document.getElementById('nonDeductibleTotal').textContent = formatCurrency(nonDeductibleExpenses);
-      document.getElementById('monthlyAverage').textContent = formatCurrency(monthlyAverage);
-
-      // Client analysis
-      const clientTotals = {}; let totalClientRevenue = 0;
-      [...filteredInvoices, ...filteredMissing].forEach(inv=>{
-        const aed = convertToAED(inv.amount || inv.paidAmount || 0, inv.currency);
-        totalClientRevenue += aed;
-        if(!clientTotals[inv.client]) clientTotals[inv.client] = { USD:0, AED:0 };
-        clientTotals[inv.client][inv.currency] += (inv.amount || inv.paidAmount || 0);
-      });
-      const sorted = Object.entries(clientTotals).map(([client, cur])=>{
-        const aedTot = convertToAED(cur.USD,'USD') + cur.AED; return [client, cur, aedTot];
-      }).sort((a,b)=>b[2]-a[2]).slice(0,5);
-      const clientHTML = sorted.map(([client, cur, aedTot])=>{
-        const pct = totalClientRevenue>0 ? ((aedTot/totalClientRevenue)*100).toFixed(1) : 0;
-        const display = client.length>25 ? client.substring(0,25)+'...' : client;
-        return `<div class="metric-row"><span class="metric-label">${display}</span><span class="metric-value">${formatCurrency(aedTot)} (${pct}%)</span></div>`;
-      }).join('');
-      document.getElementById('clientAnalysis').innerHTML = clientHTML || `<div class="metric-row"><span class="metric-label">No data available</span><span class="metric-value">-</span></div>`;
-
-      updateInvoiceTable(filteredInvoices);
-      updateCostTable(filteredExpenses);
-      updateCostSummaryGrid(filteredExpenses);
-      updateChart(filteredInvoices);
-      updateWixConnectionStatus();
-    }
-
-    function updateChart(invoices){
-      const ctx = document.getElementById('monthlyChart').getContext('2d');
-      if(window.monthlyChart) window.monthlyChart.destroy();
-      const monthly = {};
-      invoices.forEach(inv=>{
-        const d = new Date(inv.date); const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-        if(!monthly[key]) monthly[key] = { invoiced:0, collected:0 };
-        const aedAmt = convertToAED(inv.amount, inv.currency);
-        const aedPaid = convertToAED(inv.paidAmount||0, inv.currency);
-        monthly[key].invoiced += aedAmt; monthly[key].collected += aedPaid;
-      });
-      const keys = Object.keys(monthly).sort();
-      const labels = keys.map(k=>{ const [y,m]=k.split('-'); return new Date(y,m-1).toLocaleDateString('en-US',{month:'short',year:'numeric'}); });
-      const invoiced = keys.map(k=>monthly[k].invoiced);
-      const collected = keys.map(k=>monthly[k].collected);
-      window.monthlyChart = new Chart(ctx, {
-        type:'line',
-        data:{
-          labels,
-          datasets:[
-            { label:'Invoiced', data:invoiced, borderColor:'#4A90A4', backgroundColor:'rgba(74,144,164,0.1)', tension:0.4, fill:true },
-            { label:'Collected', data:collected, borderColor:'#2A9D8F', backgroundColor:'rgba(42,157,143,0.1)', tension:0.4, fill:true }
-          ]
-        },
-        options:{
-          responsive:true, maintainAspectRatio:false,
-          plugins:{ legend:{ position:'top', labels:{ usePointStyle:true, padding:20, font:{ weight:600 } } } },
-          scales:{
-            x:{ grid:{ display:false }, ticks:{ font:{ weight:500 } } },
-            y:{ beginAtZero:true, grid:{ color:'rgba(0,0,0,0.05)' }, ticks:{ callback:v=>'AED '+Number(v).toLocaleString(), font:{ weight:500 } } }
-          },
-          interaction:{ intersect:false, mode:'index' }
-        }
-      });
-    }
-
-    // Quick utilities
-    function seedDemo(){
-      const today = new Date().toISOString().split('T')[0];
-      const demo = [
-        {description:'Office Rent', date:today, amount:4500, currency:'AED', category:'Office', deductible:true, notes:'Business Bay'},
-        {description:'Adobe CC', date:today, amount:54.99, currency:'USD', category:'Technology', deductible:true, notes:'Monthly'},
-        {description:'Marketing Campaign', date:today, amount:2200, currency:'AED', category:'Marketing', deductible:true, notes:'Q3 push'},
-        {description:'Consultant Salary', date:today, amount:12000, currency:'AED', category:'Salary', deductible:true, notes:'August payroll'}
-      ].map(e=>({ id:'cost_'+Date.now()+'_'+Math.random().toString(36).slice(2), ...e }));
-      if(!financialData.expenses) financialData.expenses = [];
-      financialData.expenses.push(...demo);
-      saveData(); updateDashboard(); alert('✅ Demo expenses loaded.');
-    }
-    function clearAll(){
-      if(!confirm('This will clear all locally saved invoices, expenses, and settings. Continue?')) return;
+    if (LIVE_MODE) {
+      // clear viewer storage so no stale data wins
       localStorage.removeItem('poultonFinancialData');
       localStorage.removeItem('poultonSettings');
-      financialData.expenses = [];
-      financialData.wixSettings = { siteUrl:'', apiKey:'', autoSyncFreq:'manual', lastSync:null, connected:false };
-      document.getElementById('taxRate').value = 0;
-      document.getElementById('exchangeRate').value = 3.67;
-      document.getElementById('taxYear').value = '2025';
-      document.getElementById('wixSiteUrl').value = '';
-      document.getElementById('wixApiKey').value = '';
-      document.getElementById('autoSyncFreq').value = 'manual';
-      updateDashboard();
-      alert('🧹 Cleared. Fresh start.');
     }
 
-    function updateCalculations(){ saveData(); updateDashboard(); }
+    const [invRaw, costRaw] = await Promise.all([csv(INVOICES_URL), csv(COSTS_URL)]);
 
-    // Init
-    loadSavedData();
-    updateDashboard();
-    setInterval(saveData, 30000);
-    document.getElementById('newCostDate').value = new Date().toISOString().split('T')[0];
-    document.getElementById('newInvoiceDate').value = new Date().toISOString().split('T')[0];
-  </script>
+    // Map CSV → your app’s structure, then redraw everything
+    const invoices = invRaw.map(r=>({
+      num:       r['Invoice #'] || r.num || '',
+      date:      r.Date || r.date,
+      client:    r.Client || r.client || '',
+      currency:  (r.Currency || r.currency || 'AED').toUpperCase(),
+      amount:    num(r.Amount || r.amount),
+      status:    r.Status || r.status || 'Unpaid',
+      paidAmount:num(r['Paid Amount'] || r.paidAmount || (/(paid|success|cleared|complete)/i.test(r.Status||'') ? r.Amount : 0))
+    }));
+
+    const expenses = costRaw.map(r=>({
+      id:        'cost_'+crypto.randomUUID?.() || String(Math.random()).slice(2),
+      description:r.Description || r.description || 'Expense',
+      date:      r.Date || r.date,
+      category:  r.Category || r.category || 'Other',
+      amount:    num(r.Amount || r.amount),
+      currency:  (r.Currency || r.currency || 'AED').toUpperCase(),
+      deductible:String(r['Tax Deductible'] || r.deductible || '').toLowerCase().startsWith('y'),
+      notes:     r.Notes || r.notes || ''
+    }));
+
+    // Put CSV data into your global model
+    if (window.financialData) {
+      window.financialData.invoices = invoices;
+      window.financialData.expenses = expenses;
+    }
+
+    // Finally redraw
+    if (typeof window.updateDashboard === 'function') {
+      window.updateDashboard();
+    }
+  } catch (e){
+    console.warn('Live CSV load failed; falling back to seeded/local data:', e);
+    // If CSVs fail, your existing seeded+localStorage behavior still works.
+  }
+})();
+</script>
+
 </body>
 </html>
