@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Poulton Consultancy - Financial Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+  <style>
+    /* (same branding CSS as before, unchanged for brevity) */
+  </style>
+</head>
+<body>
+  <!-- (same header, settings, wix integration, summary, costs, invoices structure as before) -->
+
+  <script>
+    // ===== Data
+    let financialData = { invoices: [], expenses: [], missingInvoices: [], wixSettings: { siteUrl:'', apiKey:'', autoSyncFreq:'manual', lastSync:null, connected:false } };
+
+    // ===== CSV Import Helpers =====
+    function parseCSV(text){
+      const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+      if(lines.length<2) return [];
+      const headers = lines[0].split(',').map(h=>h.trim());
+      return lines.slice(1).map(line => {
+        const values = line.split(',');
+        const obj = {};
+        headers.forEach((h,i)=> obj[h] = values[i]? values[i].trim():"");
+        return obj;
+      });
+    }
+    function handleCSVUpload(type){
+      const input = document.createElement('input');
+      input.type='file';
+      input.accept='.csv,.json';
+      input.onchange = ev => {
+        const file = ev.target.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = e => {
+          try{
+            let imported=[];
+            if(file.name.toLowerCase().endsWith('.json')){
+              imported = JSON.parse(e.target.result);
+            } else {
+              imported = parseCSV(e.target.result);
+            }
+            if(type==='invoices'){
+              imported.forEach(r=>{
+                financialData.invoices.push({
+                  num: r["Invoice #"] || r.num || 'INV'+Date.now(),
+                  date: r.Date || r.date || new Date().toISOString().split('T')[0],
+                  client: r.Client || r.client || 'Unknown',
+                  amount: parseFloat(r.Amount || r.amount || 0),
+                  currency: r.Currency || r.currency || 'AED',
+                  status: r.Status || r.status || 'Unpaid',
+                  paidAmount: parseFloat(r["Paid Amount"] || r.paidAmount || 0)
+                });
+              });
+            } else if(type==='costs'){
+              imported.forEach(r=>{
+                financialData.expenses.push({
+                  id:'imported_'+Date.now()+Math.random(),
+                  description: r.Description || r.description || 'Expense',
+                  date: r.Date || r.date || new Date().toISOString().split('T')[0],
+                  amount: parseFloat(r.Amount || r.amount || 0),
+                  currency: r.Currency || r.currency || 'AED',
+                  category: r.Category || r.category || 'Other',
+                  deductible: (r["Tax Deductible"] || r.deductible || '').toString().toLowerCase().startsWith('y'),
+                  notes: r.Notes || r.notes || ''
+                });
+              });
+            }
+            saveData();
+            updateDashboard();
+            alert(`✅ Imported ${imported.length} ${type}`);
+          }catch(err){ alert('❌ Import failed: '+err.message); }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+
+    // Hook new buttons
+    function importInvoicesFromFile(){ handleCSVUpload('invoices'); }
+    function importCostsFromFile(){ handleCSVUpload('costs'); }
+
+    // Keep all your other functions: addNewInvoice, addNewCost, updateDashboard, charts, etc. unchanged.
+  </script>
+</body>
+</html>
