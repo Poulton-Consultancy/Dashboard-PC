@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Poulton Consultancy - Financial Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+  <style>
+    body { font-family:'Inter','Segoe UI',Tahoma,sans-serif; background:#f9f9f9; margin:0; padding:0;}
+    header { background:#2E5C8A; color:#fff; padding:20px; text-align:center;}
+    .container{ max-width:1200px; margin:20px auto; padding:20px; background:#fff; border-radius:10px; box-shadow:0 4px 20px rgba(0,0,0,0.1);}
+    h1{ margin:0; font-size:2em;}
+    .btn{ padding:8px 16px; border:none; border-radius:6px; cursor:pointer; margin:4px;}
+    .btn-primary{ background:#2E5C8A; color:#fff;}
+    table{ width:100%; border-collapse:collapse; margin-top:20px;}
+    th,td{ padding:10px; border-bottom:1px solid #ddd; text-align:left;}
+    th{ background:#f0f0f0;}
+    .chart-container{ position:relative; height:300px; margin:20px 0;}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Poulton Consultancy – Financial Dashboard</h1>
+  <p>Leadership • Education • Excellence</p>
+</header>
+<div class="container">
+  <h2>Upload Data</h2>
+  <button class="btn btn-primary" onclick="importInvoicesFromFile()">Upload Invoices CSV</button>
+  <button class="btn btn-primary" onclick="importCostsFromFile()">Upload Costs CSV</button>
+
+  <div class="chart-container"><canvas id="monthlyChart"></canvas></div>
+
+  <h2>Invoices</h2>
+  <table id="invoiceTable"><thead><tr><th>Invoice #</th><th>Date</th><th>Client</th><th>Amount</th><th>Status</th></tr></thead><tbody></tbody></table>
+
+  <h2>Costs</h2>
+  <table id="costTable"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th></tr></thead><tbody></tbody></table>
+</div>
+
+<script>
+let financialData = { invoices: [], expenses: [] };
+
+function stripBOM(s){ return s.charCodeAt(0)===0xFEFF ? s.slice(1) : s; }
+function detectDelimiter(sample){ const cand=[',',';','\t']; const top=sample.split('\n',10).join('\n'); const counts=cand.map(d=>(top.match(new RegExp(d,'g'))||[]).length); return cand[counts.indexOf(Math.max(...counts))]||','; }
+function parseCSV(text){ text=stripBOM(String(text||'')); const delim=detectDelimiter(text); const rows=[]; let i=0,cur='',quoted=false,row=[]; while(i<text.length){ const c=text[i++]; if(c=='"'){ if(quoted && text[i]=='"'){ cur+='"'; i++; } else { quoted=!quoted; } } else if(c===delim && !quoted){ row.push(cur); cur=''; } else if((c==='\n'||c==='\r') && !quoted){ if(cur.length||row.length){ row.push(cur); rows.push(row); row=[]; cur=''; } } else { cur+=c; } } if(cur.length||row.length){ row.push(cur); rows.push(row); } return rows; }
+function normalizeObjects(rows){ if(!rows.length) return []; const header=rows[0].map(h=>(h||'').trim()); const looksLikeHeader=header.some(h=>/date|amount|currency|client|invoice|description|category|status/i.test(h)); if(looksLikeHeader){ return rows.slice(1).filter(r=>r.some(c=>String(c).trim()!=='')).map(r=>{const o={}; header.forEach((h,idx)=>o[h]= (r[idx]??'').toString().trim()); return o;}); } return rows.filter(r=>r.some(c=>String(c).trim()!=='')).map(r=>({0:(r[0]||'').trim(),1:(r[1]||'').trim(),2:(r[2]||'').trim(),3:(r[3]||'').trim(),4:(r[4]||'').trim(),5:(r[5]||'').trim(),6:(r[6]||'').trim()})); }
+
+function toISODateFlexible(d){ if(!d) return new Date().toISOString().slice(0,10); const s=String(d).trim(); if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; const m=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/); if(m){ let [_,a,b,c]=m; a=+a; b=+b; c=+c; if(c<100) c+=2000; const dd=a>12?a:b; const mm=a>12?b:a; return `${c}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`; } const t=new Date(s); return isFinite(t)? t.toISOString().slice(0,10):new Date().toISOString().slice(0,10); }
+
+function normalizeInvoice(o){ const num=s=>Number(String(s||'0').replace(/[^\d.-]/g,''))||0; return { num:o.num||o['Invoice #']||o[0]||'', date:toISODateFlexible(o.date||o.Date||o[1]), client:o.client||o.Client||o[2]||'', amount:num(o.amount||o.Amount||o[3]), currency:(o.currency||o.Currency||o[4]||'AED').toUpperCase(), status:o.status||o.Status||o[5]||'Unpaid', paidAmount:num(o.paidAmount||o['Paid Amount']||o[6]||0) }; }
+function normalizeCostRecord(v){ const num=s=>Number(String(s||'0').replace(/[^\d.-]/g,''))||0; return { description:v.description||v.Description||v[1]||'Expense', date:toISODateFlexible(v.date||v.Date||v[0]), category:v.category||v.Category||v[2]||'Other', amount:num(v.amount||v.Amount||v[3]), currency:(v.currency||v.Currency||v[4]||'AED').toUpperCase() }; }
+
+function importInvoicesFromFile(){ const input=document.createElement('input'); input.type='file'; input.accept='.csv,.json'; input.onchange=(ev)=>{ const file=ev.target.files[0]; if(!file) return; const reader=new FileReader(); reader.onload=(e)=>{ try{ let imported=[]; const raw=stripBOM(e.target.result); if(file.name.endsWith('.json')){ const json=JSON.parse(raw); imported=json.map(normalizeInvoice); } else { const rows=parseCSV(raw); const objs=normalizeObjects(rows); imported=objs.map(normalizeInvoice); } if(imported.length){ financialData.invoices.push(...imported); updateDashboard(); alert('Imported '+imported.length+' invoices'); } }catch(err){ alert('Error: '+err.message); } }; reader.readAsText(file); }; input.click(); }
+function importCostsFromFile(){ const input=document.createElement('input'); input.type='file'; input.accept='.csv,.json'; input.onchange=(ev)=>{ const file=ev.target.files[0]; if(!file) return; const reader=new FileReader(); reader.onload=(e)=>{ try{ let imported=[]; const raw=stripBOM(e.target.result); if(file.name.endsWith('.json')){ const json=JSON.parse(raw); imported=json.map(normalizeCostRecord); } else { const rows=parseCSV(raw); const objs=normalizeObjects(rows); imported=objs.map(normalizeCostRecord); } if(imported.length){ financialData.expenses.push(...imported); updateDashboard(); alert('Imported '+imported.length+' costs'); } }catch(err){ alert('Error: '+err.message); } }; reader.readAsText(file); }; input.click(); }
+
+function updateDashboard(){ const invBody=document.querySelector('#invoiceTable tbody'); invBody.innerHTML=''; financialData.invoices.forEach(i=>{ const row=`<tr><td>${i.num}</td><td>${i.date}</td><td>${i.client}</td><td>${i.amount} ${i.currency}</td><td>${i.status}</td></tr>`; invBody.insertAdjacentHTML('beforeend',row); }); const costBody=document.querySelector('#costTable tbody'); costBody.innerHTML=''; financialData.expenses.forEach(c=>{ const row=`<tr><td>${c.date}</td><td>${c.description}</td><td>${c.category}</td><td>${c.amount} ${c.currency}</td></tr>`; costBody.insertAdjacentHTML('beforeend',row); }); updateChart(); }
+
+function updateChart(){ const ctx=document.getElementById('monthlyChart').getContext('2d'); if(window.myChart) window.myChart.destroy(); const monthly={}; financialData.invoices.forEach(inv=>{ const d=new Date(inv.date); const key=`${d.getFullYear()}-${d.getMonth()+1}`; if(!monthly[key]) monthly[key]=0; monthly[key]+=inv.amount; }); const labels=Object.keys(monthly); const data=Object.values(monthly); window.myChart=new Chart(ctx,{ type:'bar', data:{ labels:labels, datasets:[{label:'Invoice Amounts', data:data, backgroundColor:'#2E5C8A'}] }, options:{ responsive:true, maintainAspectRatio:false } }); }
+</script>
+</body>
+</html>
