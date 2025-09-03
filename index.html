@@ -628,44 +628,160 @@ document.getElementById('newCostDate').value=new Date().toISOString().split('T')
 document.getElementById('newInvoiceDate').value=new Date().toISOString().split('T')[0];
 </script>
 
-<!-- ---------- Live CSV loader: merges, never overwrites ---------- -->
+<!-- ===== Wix API Loader: pull invoices/costs from your Wix site ===== -->
 <script>
-const LIVE_MODE = new URLSearchParams(location.search).get('live') === '1';
-const BUILD = Date.now();
-const INVOICES_URL = './data/invoices.csv?v=' + BUILD;
-const COSTS_URL = './data/costs.csv?v=' + BUILD;
+/**
+ * We’ll call your Wix HTTP functions using the values you already input in the
+ * “Wix Site Integration” card (siteUrl + apiKey). Nothing is hard-coded.
+ * - Click “Test Connection” to save settings.
+ * - Press “Sync Now” to fetch fresh data from Wix immediately.
+ */
 
-async function fetchCSVObjects(url){
-  const res = await fetch(url, {cache:'no-store'});
-  if(!res.ok) throw new Error(`${url} ${res.status}`);
-  const text = await res.text();
-  const rows = parseCSV(text);
-  return normalizeObjects(rows);
+function wixBaseUrl() {
+  try {
+    const siteUrl = (financialData?.wixSettings?.siteUrl || '').trim();
+    if (!siteUrl) return null;
+    const u = new URL(siteUrl);
+    return `${u.origin}/_functions`;
+  } catch (_) {
+    return null;
+  }
 }
 
-(async()=>{
-  try{
-    // Load both CSVs, normalize, then MERGE into current state
-    const [invObjs, costObjs] = await Promise.allSettled([fetchCSVObjects(INVOICES_URL), fetchCSVObjects(COSTS_URL)]);
-    const invArr = invObjs.status==='fulfilled' ? invObjs.value.map(normalizeInvoice) : [];
-    const costArr = costObjs.status==='fulfilled' ? costObjs.value.map(normalizeCostRecord) : [];
+async function wixFetchJSON(path) {
+  const base = wixBaseUrl();
+  const key  = (financialData?.wixSettings?.apiKey || '').trim();
 
-    if(invArr.length){
-      const r = mergeInvoices(financialData.invoices||[], invArr);
-      financialData.invoices = r.merged;
-      if(r.duplicates.length) console.warn('Invoice duplicates skipped from CSV:', r.duplicates.length);
-    }
-    if(costArr.length){
-      const r = mergeCosts(financialData.expenses||[], costArr);
-      financialData.expenses = r.merged;
-      if(r.duplicates.length) console.warn('Cost duplicates skipped from CSV:', r.duplicates.length);
-    }
-
-    if(invArr.length || costArr.length){ saveData(); updateDashboard(); }
-  }catch(err){
-    console.warn('CSV merge skipped due to error:', err);
+  if (!base || !key) {
+    throw new Error('Missing Wix Site URL or API Key (set in the Integration section).');
   }
+
+  const res = await fetch(`${base}/${path}`, {
+    headers: { 'Authorization': `Bearer ${key}` },
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(()=>'');
+    throw new Error(`Wix API error ${res.status}: ${t}`);
+  }
+  return res.json();
+}
+
+/** Robust normalizers (map your Wix fields to the dashboard shape) */
+function normalizeInvoiceFromWix(o) {
+  const n = s => Number(String(s ?? '0').replace(/[^0-9.-]/g, '')) || 0;
+  return {
+    num:       o.num || o.number || o.invoiceNumber || o['Invoice #'] || o._id || '',
+    date:      o.date || o.invoiceDate || o.createdAt || o.Date || '',
+    client:    o.client || o.clientName || o.customer || o.Client || '',
+    amount:    n(o.amount || o.Amount),
+    currency:  (o.currency || o.Currency || 'AED').toUpperCase(),
+    status:    o.status || o.Status || 'Unpaid',
+    paidAmount:n(o.paidAmount || o['Paid Amount'] || (String(o.status||'').match(/paid|success|cleared|complete/i) ? (o.amount||0) : 0))
+  };
+}
+
+function normalizeCostFromWix(o) {
+  const n = s => Number(String(s ?? '0').replace(/[^0-9.-]/g, '')) || 0;
+  return {
+    id:         o._id || ('cost_'+Date.now()+'_'+Math.random().toString(36).slice(2)),
+    description:o.description || o.desc || o.Description || 'Expense',
+    date:       o.date || o.Date || '',
+    category:   o.category || o.Category || 'Other',
+    amount:     n(o.amount || o.Amount),
+    currency:   (o.currency || o.Currency || 'AED').toUpperCase(),
+    deductible: String(o.deductible ?? o['Tax Deductible'] ?? '').toLowerCase().startsWith('y'),
+    notes:      o.notes || o.Notes || ''
+  };
+}
+
+/** De-dupe helpers: key on (num|date|amount) for invoices, (desc|date|amount) for costs */
+function dedupeInvoices(list) {
+  const map = new Map();
+  list.forEach(inv => {
+    const k = [inv.num||'', inv.date||'', Number(inv.amount)||0].join('|');
+    if (!map.has(k)) map.set(k, inv);
+  });
+  return [...map.values()];
+}
+
+function dedupeCosts(list) {
+  const map = new Map();
+  list.forEach(c => {
+    const k = [String(c.description||'').toLowerCase(), c.date||'', Number(c.amount)||0].join('|');
+    if (!map.has(k)) map.set(k, c);
+  });
+  return [...map.values()];
+}
+
+/** Load from Wix and merge (with dedupe) */
+async function loadFromWixAndMerge() {
+  const statusDiv = document.getElementById('wixConnectionStatus');
+  try {
+    if (statusDiv) {
+      statusDiv.className = 'integration-status pending';
+      statusDiv.innerHTML = '<span>🟡</span> Fetching from Wix...';
+    }
+
+    const [invResp, costResp] = await Promise.all([
+      wixFetchJSON('invoices'),
+      wixFetchJSON('costs'),
+    ]);
+
+    const wixInvoices = (invResp?.items || []).map(normalizeInvoiceFromWix);
+    const wixCosts    = (costResp?.items || []).map(normalizeCostFromWix);
+
+    // Merge with any locally saved/added items (manual entries or imported CSVs)
+    const localInv = Array.isArray(financialData.invoices) ? financialData.invoices : [];
+    const localExp = Array.isArray(financialData.expenses) ? financialData.expenses : [];
+
+    const mergedInv = dedupeInvoices([...wixInvoices, ...localInv]);
+    const mergedExp = dedupeCosts([...wixCosts, ...localExp]);
+
+    financialData.invoices = mergedInv;
+    financialData.expenses = mergedExp;
+
+    // Persist & refresh UI
+    saveData();
+    updateDashboard();
+
+    if (statusDiv) {
+      financialData.wixSettings.lastSync = new Date().toISOString();
+      saveData();
+      statusDiv.className = 'integration-status connected';
+      statusDiv.innerHTML = '<span>🟢</span> Connected to Wix - Last sync: ' +
+        new Date(financialData.wixSettings.lastSync).toLocaleString();
+    }
+  } catch (err) {
+    console.warn('Wix sync failed:', err);
+    if (statusDiv) {
+      statusDiv.className = 'integration-status disconnected';
+      statusDiv.innerHTML = '<span>🔴</span> Wix sync failed: ' + (err?.message || err);
+    }
+    // Keep existing local/seeded data visible
+    updateDashboard();
+  }
+}
+
+/** Wire the existing “Sync Now” button */
+window.syncWithWix = async function () {
+  await loadFromWixAndMerge();
+};
+
+/** Optional: auto-refresh every 10 minutes if Auto-Sync is not manual */
+setInterval(() => {
+  const freq = financialData?.wixSettings?.autoSyncFreq || 'manual';
+  if (freq !== 'manual') loadFromWixAndMerge();
+}, 10 * 60 * 1000);
+
+// On first load, try to connect if both URL+API key are present
+(function bootstrapWixLoad(){
+  const hasUrl = !!(financialData?.wixSettings?.siteUrl);
+  const hasKey = !!(financialData?.wixSettings?.apiKey);
+  if (hasUrl && hasKey) loadFromWixAndMerge();
 })();
 </script>
+
 </body>
 </html>
