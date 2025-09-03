@@ -956,91 +956,141 @@
   </script>
 
   <!-- ===== Live CSV Loader: everyone sees data from invoices.csv + costs.csv ===== -->
-  <script>
-  /* Live mode: always read CSVs when ?live=1 (or use the code paths below) */
-  const LIVE_MODE = new URLSearchParams(location.search).get('live') === '1';
-  const BUILD = Date.now(); // cache-buster
-  const INVOICES_URL = `./invoices.csv?v=${BUILD}`;
-  const COSTS_URL    = `./costs.csv?v=${BUILD}`;
-  const FX = { AED: 1, USD: 3.67 };
+<script>
+/* Live mode when ?live=1 — read invoices.csv + costs.csv safely */
+const LIVE_MODE = new URLSearchParams(location.search).get('live') === '1';
+const BUILD = Date.now(); // cache-buster
+const INVOICES_URL = `./invoices.csv?v=${BUILD}`;
+const COSTS_URL    = `./costs.csv?v=${BUILD}`;
+const FX = { AED: 1, USD: 3.67 };
 
-  const money = n => Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-  const num = v => { const n = Number(String(v??'').replace(/[, ]/g,'')); return isFinite(n)?n:0; };
-  const toAED = (amt, cur='AED') => num(amt) * (FX[(cur||'AED').toUpperCase().trim()] ?? 1);
+// ---- helpers (robust + compatible with your app) ----
+const money = n => Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const num   = v => { const n = Number(String(v??'').replace(/[, ]/g,'')); return isFinite(n)?n:0; };
+const toAED = (amt, cur='AED') => num(amt) * (FX[(cur||'AED').toUpperCase().trim()] ?? 1);
 
-  const monthKey = (d)=>{
-    if(!d) return 'Unknown';
-    const iso = new Date(String(d).trim());
-    if(!isNaN(iso)) return `${iso.getFullYear()}-${String(iso.getMonth()+1).padStart(2,'0')}`;
-    return 'Unknown';
-  };
+function detectDelimiter(sample){
+  const cand = [',',';','\t'];
+  const top = String(sample||'').split('\n',10).join('\n');
+  const counts = cand.map(d => (top.match(new RegExp(d,'g'))||[]).length);
+  return cand[counts.indexOf(Math.max(...counts))] || ',';
+}
+function stripBOM(s){ s = String(s||''); return s.charCodeAt(0)===0xFEFF ? s.slice(1) : s; }
 
-  async function csv(url){
-    const res = await fetch(url, { cache:'no-store' });
-    if(!res.ok) throw new Error(`Load fail ${url} ${res.status}`);
-    const text = await res.text();
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    const headers = (lines.shift()||'').split(',').map(s=>s.trim());
-    return lines.map(line=>{
-      const cells = line.split(',').map(s=>s.trim());
-      const o={}; headers.forEach((h,i)=>o[h]=cells[i]); return o;
-    });
-  }
-
-  // Guard: in LIVE_MODE we avoid writing viewer LocalStorage
-  const _saveData = window.saveData;
-  window.saveData = function(){ if (!LIVE_MODE && typeof _saveData === 'function') _saveData(); };
-
-  (async ()=>{
-    try{
-      if('serviceWorker' in navigator){
-        navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r=>r.unregister()));
-      }
-
-      if (LIVE_MODE) {
-        // Ensure no stale local data wins over CSVs for viewers
-        localStorage.removeItem('poultonFinancialData');
-        localStorage.removeItem('poultonSettings');
-      }
-
-      const [invRaw, costRaw] = await Promise.all([csv(INVOICES_URL), csv(COSTS_URL)]);
-
-      const invoices = invRaw.map(r=>({
-        num:       r['Invoice #'] || r.num || '',
-        date:      r.Date || r.date,
-        client:    r.Client || r.client || '',
-        currency:  (r.Currency || r.currency || 'AED').toUpperCase(),
-        amount:    num(r.Amount || r.amount),
-        status:    r.Status || r.status || 'Unpaid',
-        paidAmount: num(
-          r['Paid Amount'] ?? r.paidAmount ??
-          (/(paid|success|cleared|complete)/i.test(String(r.Status||'')) ? (r.Amount||0) : 0)
-        )
-      }));
-
-      const expenses = costRaw.map(r=>({
-        id:        'cost_'+(crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)),
-        description:r.Description || r.description || 'Expense',
-        date:      r.Date || r.date,
-        category:  r.Category || r.category || 'Other',
-        amount:    num(r.Amount || r.amount),
-        currency:  (r.Currency || r.currency || 'AED').toUpperCase(),
-        deductible:String(r['Tax Deductible'] || r.deductible || '').toLowerCase().startsWith('y'),
-        notes:     r.Notes || r.notes || ''
-      }));
-
-      if (window.financialData) {
-        window.financialData.invoices = invoices;
-        window.financialData.expenses = expenses;
-      }
-
-      if (typeof window.updateDashboard === 'function') {
-        window.updateDashboard();
-      }
-    } catch (e){
-      console.warn('CSV load error; falling back to seeded/local data:', e);
+/* CSV parser that supports quotes and commas in fields */
+function parseCSV(text){
+  text = stripBOM(String(text||''));
+  const delim = detectDelimiter(text);
+  const rows=[]; let i=0, cur='', quoted=false, row=[];
+  while(i<text.length){
+    const c=text[i++];
+    if(c === '"'){
+      if(quoted && text[i] === '"'){ cur += '"'; i++; }
+      else { quoted = !quoted; }
+    } else if(c === delim && !quoted){
+      row.push(cur); cur='';
+    } else if((c === '\n' || c === '\r') && !quoted){
+      if(cur.length || row.length){ row.push(cur); rows.push(row); row=[]; cur=''; }
+    } else {
+      cur += c;
     }
-  })();
-  </script>
+  }
+  if(cur.length || row.length){ row.push(cur); rows.push(row); }
+  return rows;
+}
+function normalizeObjects(rows){
+  if(!rows.length) return [];
+  const header = rows[0].map(h => (h||'').trim());
+  const looksLikeHeader = header.some(h => /date|amount|currency|client|invoice|description|category|status|paid/i.test(h));
+  if(looksLikeHeader){
+    return rows.slice(1)
+      .filter(r => r.some(c => String(c).trim()!==''))
+      .map(r => { const o={}; header.forEach((h,idx)=>o[h]=(r[idx]??'').toString().trim()); return o; });
+  }
+  // no header → index-based
+  return rows
+    .filter(r => r.some(c => String(c).trim()!==''))
+    .map(r => ({0:(r[0]||'').trim(),1:(r[1]||'').trim(),2:(r[2]||'').trim(),3:(r[3]||'').trim(),4:(r[4]||'').trim(),5:(r[5]||'').trim(),6:(r[6]||'').trim()}));
+}
+
+function toISODateFlexible(d){
+  if(!d) return new Date().toISOString().slice(0,10);
+  const s = String(d).trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if(m){
+    let [_,a,b,c]=m; a=+a; b=+b; c=+c; if(c<100) c+=2000;
+    const dd = a>12 ? a : b; const mm = a>12 ? b : a;
+    return `${c}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+  }
+  const t = new Date(s);
+  return isFinite(t) ? t.toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+}
+
+// normalize rows to your app’s shape
+const normInvoice = o => ({
+  num:        o.num || o['Invoice #'] || o.invoice || o[0] || '',
+  date:       toISODateFlexible(o.date || o.Date || o[1]),
+  client:     o.client || o.Client || o[2] || '',
+  amount:     num(o.amount || o.Amount || o[3]),
+  currency:   (o.currency || o.Currency || o[4] || 'AED').toUpperCase(),
+  status:     o.status || o.Status || o[5] || 'Unpaid',
+  paidAmount: num(o.paidAmount || o['Paid Amount'] || o[6] || 0)
+});
+const normCost = v => ({
+  id:         'cost_'+Date.now()+'_'+Math.random().toString(36).slice(2),
+  description: v.description || v.Description || v[1] || 'Expense',
+  date:        toISODateFlexible(v.date || v.Date || v[0]),
+  category:    v.category || v.Category || v[2] || 'Other',
+  amount:      num(v.amount || v.Amount || v[3]),
+  currency:    (v.currency || v.Currency || v[4] || 'AED').toUpperCase(),
+  deductible:  String(v['Tax Deductible'] || v.deductible || v[5] || '').toLowerCase().startsWith('y'),
+  notes:       v.notes || v.Notes || v[6] || ''
+});
+
+async function fetchCSVObjects(url){
+  const res = await fetch(url, { cache:'no-store' });
+  if(!res.ok) throw new Error(`Load fail ${url} ${res.status}`);
+  const text = await res.text();
+  const rows = parseCSV(text);
+  return normalizeObjects(rows);
+}
+
+// Don’t disable saving in live mode; just avoid clobbering on bad CSV.
+(async ()=>{
+  try{
+    if (!LIVE_MODE) return; // only intervene in live mode
+
+    // Keep a copy of current data in case CSVs are empty/bad
+    const prev = JSON.parse(JSON.stringify(window.financialData||{}));
+
+    const [invObjs, costObjs] = await Promise.all([
+      fetchCSVObjects(INVOICES_URL),
+      fetchCSVObjects(COSTS_URL)
+    ]);
+
+    const invoices = invObjs.map(normInvoice).filter(i => i.num || i.amount);
+    const expenses = costObjs.map(normCost).filter(c => c.amount);
+
+    // Only replace if we actually parsed something meaningful
+    const haveInvoices = invoices.length > 0;
+    const haveCosts    = expenses.length > 0;
+
+    if (haveInvoices || haveCosts) {
+      if (window.financialData){
+        if (haveInvoices) window.financialData.invoices = invoices;
+        if (haveCosts)    window.financialData.expenses = expenses;
+      }
+      if (typeof window.updateDashboard === 'function') window.updateDashboard();
+    } else {
+      // Nothing parsed → keep previous data, just log
+      console.warn('Live CSV parsed 0 rows; keeping existing data.');
+    }
+  } catch (e){
+    console.warn('CSV load error; keeping existing data:', e);
+  }
+})();
+</script>
+
 </body>
 </html>
