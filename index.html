@@ -632,8 +632,8 @@ document.getElementById('newInvoiceDate').value=new Date().toISOString().split('
 <script>
 const LIVE_MODE = new URLSearchParams(location.search).get('live') === '1';
 const BUILD = Date.now();
-const INVOICES_URL = `./invoices.csv?v=${BUILD}`;
-const COSTS_URL = `./costs.csv?v=${BUILD}`;
+const INVOICES_URL = './data/invoices.csv?v=' + BUILD;
+const COSTS_URL = './data/costs.csv?v=' + BUILD;
 
 async function fetchCSVObjects(url){
   const res = await fetch(url, {cache:'no-store'});
